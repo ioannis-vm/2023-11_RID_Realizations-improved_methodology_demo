@@ -4,18 +4,15 @@ Loss estimation with FEMA P-58, using pelicun
 
 import concurrent.futures
 from itertools import product
-import os
 import tqdm
 import pickle
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 from pelicun.assessment import Assessment
 from src.models import Model_1_Weibull
 from src.handle_data import load_dataset
 from src.handle_data import remove_collapse
-from scipy.interpolate import interp1d
-from extra.structural_analysis.src.util import read_study_param
+from src.util import store_info
 
 
 def rm_unnamed(string):
@@ -37,12 +34,23 @@ archetype = 'scbf_9_ii'
 collapse_params = (3.589, 0.556)  # lognormal: median (g), beta
 
 
+sa_t1 = {
+    '1': 0.2066104302916705,
+    '2': 0.5568180337401586,
+    '3': 0.8898019882446327,
+    '4': 1.2147414530074077,
+    '5': 1.588363803080204,
+    '6': 1.9547124114163368,
+    '7': 2.324632990424402,
+    '8': 2.711464597513382,
+}
+
 system = 'scbf'
 stories = '9'
 rc = 'ii'
-edp_dataset = remove_collapse(load_dataset()[0], drift_threshold=0.06)[
-    (system, stories, rc)
-]
+edp_dataset = remove_collapse(
+    load_dataset('data/edp.parquet')[0], drift_threshold=0.06
+)[(system, stories, rc)]
 num_hz = len(edp_dataset.index.get_level_values('hz').unique())
 
 rid_method = 'FEMA P-58'
@@ -103,7 +111,12 @@ def run_case(hz, rid_method):
         if rid_method == 'FEMA P-58':
             pid = demand_sample["PID"]
             rid = asmt.demand.estimate_RID(pid, {"yield_drift": yield_drift})
-        elif rid_method == 'Weibull':
+            demand_sample_ext = pd.concat([demand_sample, rid], axis=1)
+        elif rid_method == 'FEMA P-58 optimized':
+            pid = demand_sample["PID"]
+            rid = asmt.demand.estimate_RID(pid, {"yield_drift": 0.01082})
+            demand_sample_ext = pd.concat([demand_sample, rid], axis=1)
+        elif rid_method == 'Conditional Weibull':
             pid_df = demand_sample['PID']
             rid_cols = []
             for col in pid_df.columns:
@@ -113,30 +126,30 @@ def run_case(hz, rid_method):
                 # fit a model
                 model = Model_1_Weibull()
                 model.add_data(pid_vals, rid_vals)
-                model.fit(method='mle')
+                model.fit(method='quantiles')
                 # generate samples
                 pid_sample = demand_sample['PID', *col].values
                 rid_sample = model.generate_rid_samples(pid_sample)
                 rid_cols.append(rid_sample)
             rid = pd.DataFrame(rid_cols, index=pid_df.columns).T
             rid = pd.concat([rid], axis=1, keys=['RID'])
+            demand_sample_ext = pd.concat([demand_sample, rid], axis=1)
+        elif rid_method == 'Empirical':
+            raw_demands_df = pd.concat(
+                (
+                    demands.drop('Units').astype(float),
+                    pd.concat((rid_demands,), keys=('RID',), axis=1),
+                ),
+                axis=1,
+            )
+            vals = raw_demands_df.values
+            num_rows, num_columns = np.shape(vals)
+            random_idx = np.random.choice(num_rows, num_realizations, replace=True)
+            new_vals = vals[random_idx, :]
+            demand_sample_ext = pd.DataFrame(new_vals, columns=raw_demands_df.columns)
         else:
             raise ValueError(f'Invalid rid_method: {rid_method}')
-
-        demand_sample_ext = pd.concat([demand_sample, rid], axis=1)
-
-        spectrum = pd.read_csv(
-            f"extra/structural_analysis/results/site_hazard/UHS_{hz}.csv",
-            index_col=0,
-            header=0,
-        )
-        ifun = interp1d(spectrum.index.to_numpy(), spectrum.to_numpy().reshape(-1))
-        base_period = float(
-            read_study_param(
-                f"extra/structural_analysis/data/{archetype}/period_closest"
-            )
-        )
-        sa_t = float(ifun(base_period))
+        sa_t = sa_t1[hz]
         demand_sample_ext[("SA", "0", "1")] = sa_t
         # add units to the data
         demand_sample_ext.T.insert(0, "Units", "")
@@ -267,7 +280,7 @@ def run_case(hz, rid_method):
 if __name__ == '__main__':
     results = []
     hzs = [f'{i+1}' for i in range(num_hz)]
-    methods = ['FEMA P-58', 'Weibull']
+    methods = ['FEMA P-58', 'FEMA P-58 optimized', 'Conditional Weibull', 'Empirical']
     args_list = list(product(hzs, methods))
     with concurrent.futures.ProcessPoolExecutor() as executor:
         futures = {executor.submit(run_case, *args): args for args in args_list}
@@ -276,87 +289,15 @@ if __name__ == '__main__':
         ):
             results.append(future.result())
 
-    hz_list = [res[0] for res in results]
+    hz_list = [int(res[0]) for res in results]
     method_list = [res[1] for res in results]
     agg_df_list = [res[2] for res in results]
     demands_list = [res[3] for res in results]
     demand_sample_ext_list = [res[4] for res in results]
-
-    _, ax = plt.subplots()
-
     df = pd.concat(agg_df_list, axis=1, keys=zip(method_list, hz_list))
     df = df.sort_index(axis=1)
 
-    df = df['FEMA P-58']
-
-    df_cost = df.xs('repair_cost', axis=1, level=1) / 1e6  # million
-    df_cost_describe = df_cost.describe()
-    mean = df_cost_describe.loc['mean', :]
-    std = df_cost_describe.loc['std', :]
-    mean_plus = mean + std
-    mean_minus = mean - std
-
-    for i in range(num_hz):
-        # sns.ecdfplot(df_cost.iloc[:, i], ax=ax, color='black')
-        ax.scatter(
-            [i + 1], [df_cost.iloc[:, i].mean()], edgecolors='black', color='none'
-        )
-        ax.scatter(
-            [i + 1],
-            [df_cost.iloc[:, i].mean() - df_cost.iloc[:, i].std()],
-            edgecolors='black',
-            color='none',
-        )
-        ax.scatter(
-            [i + 1],
-            [df_cost.iloc[:, i].mean() + df_cost.iloc[:, i].std()],
-            edgecolors='black',
-            color='none',
-        )
-        ax.plot(range(1, num_hz + 1), mean.values, color='black', linewidth=0.40)
-        ax.plot(
-            range(1, num_hz + 1), mean_plus.values, color='black', linewidth=0.40
-        )
-        ax.plot(
-            range(1, num_hz + 1), mean_minus.values, color='black', linewidth=0.40
-        )
-
-    df = pd.concat(agg_df_list, axis=1, keys=zip(method_list, hz_list))
-    df = df.sort_index(axis=1)
-
-    df = df['Weibull']
-
-    df_cost = df.xs('repair_cost', axis=1, level=1) / 1e6  # million
-    df_cost_describe = df_cost.describe()
-    mean = df_cost_describe.loc['mean', :]
-    std = df_cost_describe.loc['std', :]
-    mean_plus = mean + std
-    mean_minus = mean - std
-
-    for i in range(num_hz):
-        # sns.ecdfplot(df_cost.iloc[:, i], ax=ax, color='red')
-        ax.scatter(
-            [i + 1], [df_cost.iloc[:, i].mean()], edgecolors='red', color='none'
-        )
-        ax.scatter(
-            [i + 1],
-            [df_cost.iloc[:, i].mean() - df_cost.iloc[:, i].std()],
-            edgecolors='red',
-            color='none',
-        )
-        ax.scatter(
-            [i + 1],
-            [df_cost.iloc[:, i].mean() + df_cost.iloc[:, i].std()],
-            edgecolors='red',
-            color='none',
-        )
-        ax.plot(range(1, num_hz + 1), mean.values, color='red', linewidth=0.40)
-        ax.plot(
-            range(1, num_hz + 1), mean_plus.values, color='red', linewidth=0.40
-        )
-        ax.plot(
-            range(1, num_hz + 1), mean_minus.values, color='red', linewidth=0.40
-        )
-
-    ax.grid(which='both', linewidth=0.30)
-    plt.show()
+    with open(
+        store_info('extra/improved_methodology_demo/results/out.pcl'), 'wb'
+    ) as f:
+        pickle.dump(df, f)
