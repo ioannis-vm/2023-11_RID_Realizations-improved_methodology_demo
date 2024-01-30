@@ -53,9 +53,6 @@ edp_dataset = remove_collapse(
 )[(system, stories, rc)]
 num_hz = len(edp_dataset.index.get_level_values('hz').unique())
 
-rid_method = 'FEMA P-58'
-# rid_method = 'Weibull'
-
 
 def run_case(hz, rid_method):
     # asmt = Assessment({"PrintLog": False, "Seed": 1})
@@ -67,7 +64,7 @@ def run_case(hz, rid_method):
     # ---------------------------------- #
 
     def edps():
-        def process_demands():
+        def process_demands(hz):
             demands = (
                 edp_dataset[hz].unstack(level=0).unstack(level=0).unstack(level=0)
             ).dropna('columns')
@@ -90,7 +87,14 @@ def run_case(hz, rid_method):
             demands = pd.concat((units_df, demands))
             return demands, rid_demands
 
-        demands, rid_demands = process_demands()
+        all_demands = {}
+        all_rid_demands = {}
+        for i_hz in [f'{i+1}' for i in range(num_hz)]:
+            demands, rid_demands = process_demands(i_hz)
+            all_demands[i_hz] = demands
+            all_rid_demands[i_hz] = rid_demands
+        demands = all_demands[hz]
+        rid_demands = all_rid_demands[hz]
         asmt.demand.load_sample(demands)
         asmt.demand.calibrate_model(
             {
@@ -117,18 +121,53 @@ def run_case(hz, rid_method):
             rid = asmt.demand.estimate_RID(pid, {"yield_drift": 0.01082})
             demand_sample_ext = pd.concat([demand_sample, rid], axis=1)
         elif rid_method == 'Conditional Weibull':
+            # fit models
+            rid_demands_df = pd.concat(
+                all_rid_demands.values(),
+                keys=all_rid_demands.keys(),
+                axis=1,
+                names=('hz', 'loc', 'dir'),
+            )
+            pid_demands_df = pd.concat(
+                [all_demands[f'{i+1}']['PID'] for i in range(num_hz)],
+                keys=all_demands.keys(),
+                axis=1,
+                names=('hz', 'loc', 'dir'),
+            )
+            models = {}
+            for i_loc in [f'{i+1}' for i in range(9)]:
+                analysis_pids = (
+                    pid_demands_df.xs(i_loc, level='loc', axis=1)
+                    .drop('Units')
+                    .astype(float)
+                    .stack()
+                    .stack()
+                )
+                analysis_rids = (
+                    rid_demands_df.xs(i_loc, level='loc', axis=1).stack().stack()
+                )
+                # import matplotlib.pyplot as plt
+                # plt.scatter(analysis_rids, analysis_pids)
+                # plt.show()
+                assert np.all(analysis_pids.index == analysis_rids.index)
+                model = Model_1_Weibull()
+                model.add_data(analysis_pids.values, analysis_rids.values)
+                model.fit(method='quantiles')
+                # fig, ax = plt.subplots()
+                # model.plot_model(ax=ax)
+                # plt.show()
+                models[i_loc] = model
+            # simulate data
             pid_df = demand_sample['PID']
             rid_cols = []
+            num_points = len(demand_sample['PID'].iloc[:, 0])
+            uniform_sample = np.random.uniform(0.00, 1.00, num_points)
             for col in pid_df.columns:
-                # gather inputs
-                rid_vals = rid_demands[col].values
-                pid_vals = demands['PID', *col].drop('Units').astype(float).values
-                # fit a model
-                model = Model_1_Weibull()
-                model.add_data(pid_vals, rid_vals)
-                model.fit(method='quantiles')
                 # generate samples
                 pid_sample = demand_sample['PID', *col].values
+                assert len(pid_sample) == num_points
+                model = models[col[0]]
+                model.uniform_sample = uniform_sample
                 rid_sample = model.generate_rid_samples(pid_sample)
                 rid_cols.append(rid_sample)
             rid = pd.DataFrame(rid_cols, index=pid_df.columns).T
@@ -146,7 +185,9 @@ def run_case(hz, rid_method):
             num_rows, num_columns = np.shape(vals)
             random_idx = np.random.choice(num_rows, num_realizations, replace=True)
             new_vals = vals[random_idx, :]
-            demand_sample_ext = pd.DataFrame(new_vals, columns=raw_demands_df.columns)
+            demand_sample_ext = pd.DataFrame(
+                new_vals, columns=raw_demands_df.columns
+            )
         else:
             raise ValueError(f'Invalid rid_method: {rid_method}')
         sa_t = sa_t1[hz]
@@ -280,7 +321,11 @@ def run_case(hz, rid_method):
 if __name__ == '__main__':
     results = []
     hzs = [f'{i+1}' for i in range(num_hz)]
-    methods = ['FEMA P-58', 'FEMA P-58 optimized', 'Conditional Weibull', 'Empirical']
+    methods = [
+        'FEMA P-58',
+        'Conditional Weibull',
+        'Empirical',
+    ]
     args_list = list(product(hzs, methods))
     with concurrent.futures.ProcessPoolExecutor() as executor:
         futures = {executor.submit(run_case, *args): args for args in args_list}
