@@ -116,10 +116,6 @@ def run_case(hz, rid_method):
             pid = demand_sample["PID"]
             rid = asmt.demand.estimate_RID(pid, {"yield_drift": yield_drift})
             demand_sample_ext = pd.concat([demand_sample, rid], axis=1)
-        elif rid_method == 'FEMA P-58 optimized':
-            pid = demand_sample["PID"]
-            rid = asmt.demand.estimate_RID(pid, {"yield_drift": 0.01082})
-            demand_sample_ext = pd.concat([demand_sample, rid], axis=1)
         elif rid_method == 'Conditional Weibull':
             # fit models
             rid_demands_df = pd.concat(
