@@ -9,7 +9,7 @@ import pickle
 import numpy as np
 import pandas as pd
 from pelicun.assessment import Assessment
-from src.models import Model_1_Weibull
+from src.models import Model_Bilinear_Weibull
 from src.handle_data import load_dataset
 from src.handle_data import remove_collapse
 from src.util import store_info
@@ -145,7 +145,7 @@ def run_case(hz, rid_method):
                 # plt.scatter(analysis_rids, analysis_pids)
                 # plt.show()
                 assert np.all(analysis_pids.index == analysis_rids.index)
-                model = Model_1_Weibull()
+                model = Model_Bilinear_Weibull()
                 model.add_data(analysis_pids.values, analysis_rids.values)
                 model.fit(method='quantiles')
                 # fig, ax = plt.subplots()
