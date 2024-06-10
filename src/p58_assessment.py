@@ -88,7 +88,7 @@ def run_case(hz, rid_method):
 
         all_demands = {}
         all_rid_demands = {}
-        for i_hz in [f'{i+1}' for i in range(num_hz)]:
+        for i_hz in [f'{i + 1}' for i in range(num_hz)]:
             demands, rid_demands = process_demands(i_hz)
             all_demands[i_hz] = demands
             all_rid_demands[i_hz] = rid_demands
@@ -124,13 +124,13 @@ def run_case(hz, rid_method):
                 names=('hz', 'loc', 'dir'),
             )
             pid_demands_df = pd.concat(
-                [all_demands[f'{i+1}']['PID'] for i in range(num_hz)],
+                [all_demands[f'{i + 1}']['PID'] for i in range(num_hz)],
                 keys=all_demands.keys(),
                 axis=1,
                 names=('hz', 'loc', 'dir'),
             )
             models = {}
-            for i_loc in [f'{i+1}' for i in range(9)]:
+            for i_loc in [f'{i + 1}' for i in range(9)]:
                 analysis_pids = (
                     pid_demands_df.xs(i_loc, level='loc', axis=1)
                     .drop('Units')
@@ -315,7 +315,7 @@ def run_case(hz, rid_method):
 
 if __name__ == '__main__':
     results = []
-    hzs = [f'{i+1}' for i in range(num_hz)]
+    hzs = [f'{i + 1}' for i in range(num_hz)]
     methods = [
         'FEMA P-58',
         'Conditional Weibull',
