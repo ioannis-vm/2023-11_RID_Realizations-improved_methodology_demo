@@ -55,8 +55,7 @@ num_hz = len(edp_dataset.index.get_level_values('hz').unique())
 
 
 def run_case(hz, rid_method):
-    # asmt = Assessment({"PrintLog": False, "Seed": 1})
-    asmt = Assessment({"PrintLog": False})  # no seed, debug
+    asmt = Assessment({"PrintLog": False, "Seed": 1})
     asmt.stories = 9
 
     # ---------------------------------- #
